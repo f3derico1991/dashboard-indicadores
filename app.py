@@ -164,7 +164,7 @@ def create_interactive_section(df, section_title):
 
 # CUERPO PRINCIPAL DEL DASHBOARD
 try:
-    image = Image.open('assets/images.jpeg')
+    image = Image.open('assets/images1.jpeg')
     st.image(image, width=400) 
 except FileNotFoundError:
     st.warning("Advertencia: No se encontró el logo en 'assets/images.jpeg'.")
