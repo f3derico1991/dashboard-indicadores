@@ -4,6 +4,7 @@ import gspread
 import plotly.express as px
 from PIL import Image
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
+from io import BytesIO
 
 # CONFIGURACIÓN DE LA PÁGINA
 st.set_page_config(page_title="Dashboard de Métricas Clave", page_icon="🚀", layout="wide")
@@ -12,13 +13,7 @@ st.set_page_config(page_title="Dashboard de Métricas Clave", page_icon="🚀", 
 @st.cache_data(ttl=600)
 def load_data_from_gsheet(sheet_name):
     try:
-        # ---> CAMBIO CLAVE PARA LA SEGURIDAD <---
-        # En lugar de leer un archivo JSON local, usamos los "Secrets" de Streamlit.
-        # Streamlit gestionará de forma segura el contenido de tu archivo de credenciales.
-        # ¡Asegúrate de haber configurado st.secrets["google_credentials"] en tu despliegue!
         gc = gspread.service_account_from_dict(st.secrets["google_credentials"])
-        
-        # El nombre de la hoja de cálculo sigue siendo necesario.
         spreadsheet_name = "copia-Indicadores internos +Simple 2025"
         spreadsheet = gc.open(spreadsheet_name)
         worksheet = spreadsheet.worksheet(sheet_name)
@@ -29,7 +24,6 @@ def load_data_from_gsheet(sheet_name):
             return pd.DataFrame()
             
         df = pd.DataFrame(data)
-        # Asegurarnos que la columna Métrica sea la primera
         if 'Métrica' in df.columns:
             df = df[['Métrica'] + [col for col in df.columns if col != 'Métrica']]
         return df
@@ -38,7 +32,7 @@ def load_data_from_gsheet(sheet_name):
                  "Si estás en la web, asegúrate de que los 'Secrets' de Streamlit estén bien configurados y que has compartido el Google Sheet con el 'client_email'.")
         return None
 
-# FUNCIÓN AUXILIAR PARA PREPARAR DATOS Y ESTADÍSTICAS
+# FUNCIÓN AUXILIAR PARA PREPARAR DATOS
 def prepare_metric_data(metric_df):
     plot_df = metric_df.melt(id_vars=['Métrica'], var_name='Mes', value_name='Valor')
     plot_df['Valor_Num'] = plot_df['Valor'].astype(str).str.replace('%', '', regex=False).str.strip()
@@ -51,10 +45,10 @@ def create_interactive_section(df, section_title):
     st.header(section_title)
     if df is None or df.empty:
         st.info("No hay datos disponibles para esta sección o hubo un error al cargarlos.")
-        return
+        return pd.DataFrame()
     if 'Métrica' not in df.columns:
         st.warning("La primera columna de tu hoja de cálculo debe llamarse exactamente 'Métrica'.")
-        return
+        return pd.DataFrame()
 
     # Filtro de Meses
     all_months = [col for col in df.columns if col != 'Métrica']
@@ -67,7 +61,8 @@ def create_interactive_section(df, section_title):
         )
     if not selected_months:
         st.warning("Debes seleccionar al menos un mes.")
-        return
+        return pd.DataFrame()
+        
     filtered_df = df[['Métrica'] + selected_months]
 
     # Configuración de AgGrid
@@ -83,19 +78,8 @@ def create_interactive_section(df, section_title):
     selected = pd.DataFrame(grid_response['selected_rows'])
     
     if not selected.empty:
-        # Botones y Lógica de Visualización
-        col_btn1, col_btn2 = st.columns([1, 4])
-        with col_btn1:
-            if st.button("🔄 Limpiar Selección", key=f"clear_{section_title}"):
-                st.rerun()
-        with col_btn2:
-            csv_data = selected.to_csv(index=False).encode('utf-8')
-            st.download_button(
-               label="📥 Descargar Datos Seleccionados (CSV)",
-               data=csv_data,
-               file_name=f'datos_{section_title.replace(" ", "_")}.csv',
-               mime='text/csv',
-            )
+        if st.button("🔄 Limpiar Selección", key=f"clear_{section_title}"):
+            st.rerun()
 
         st.markdown("---")
 
@@ -116,10 +100,10 @@ def create_interactive_section(df, section_title):
                 max_val = plot_df['Valor_Num'].max()
                 min_val = plot_df['Valor_Num'].min()
                 last_val = plot_df['Valor_Num'].iloc[-1]
-                st.metric(label="Promedio", value=f"{avg_val:.2f}")
-                st.metric(label="Máximo", value=f"{max_val:.2f}")
-                st.metric(label="Mínimo", value=f"{min_val:.2f}")
-                st.metric(label="Último Mes", value=f"{last_val:.2f}")
+                st.metric(label="Promedio", value=f"{avg_val:,.2f}")
+                st.metric(label="Máximo", value=f"{max_val:,.2f}")
+                st.metric(label="Mínimo", value=f"{min_val:,.2f}")
+                st.metric(label="Último Mes", value=f"{last_val:,.2f}")
         
         st.markdown("---")
         st.subheader("📊 Visualización")
@@ -131,14 +115,21 @@ def create_interactive_section(df, section_title):
         
         chart_type = st.radio("Elige el tipo de gráfico:", ('Línea', 'Barras'), horizontal=True, key=f"radio_{section_title}")
 
+        # Función para determinar el formato del hover (CORREGIDA)
+        def get_hover_format(metric_name):
+            if '%' in metric_name.lower() or 'tasa' in metric_name.lower():
+                return "<b>Mes:</b> %{x}<br><b>Valor:</b> %{y:.2f}%<extra></extra>"
+            else:
+                # Muestra el valor tal cual, sin forzar formato de flotante o miles.
+                return "<b>Mes:</b> %{x}<br><b>Valor:</b> %{y}<extra></extra>"
+
         if len(selected) > 1 and display_mode == 'Combinado':
             combined_df = pd.concat(all_plot_data)
-            fig = px.line(combined_df, x='Mes', y='Valor_Num', color='Métrica', markers=True,
-                          color_discrete_map={'Usuarios totales de la app': 'gold', 'Tasa de crecimiento mensual de usuarios totales (acumulados)': 'darkorange'})
-            fig.update_traces(hovertemplate="<b>%{data.name}</b><br><b>Mes:</b> %{x}<br><b>Valor:</b> %{y:.2f}<extra></extra>")
+            fig = px.line(combined_df, x='Mes', y='Valor_Num', color='Métrica', markers=True)
+            # El hovertemplate para gráficos combinados es más genérico
+            fig.update_traces(hovertemplate="<b>%{data.name}</b><br><b>Mes:</b> %{x}<br><b>Valor:</b> %{y:,.2f}<extra></extra>")
             fig.update_layout(height=400, xaxis_title=None, yaxis_title=None, plot_bgcolor='rgba(0,0,0,0)',
-                              xaxis=dict(tickfont=dict(size=16, color='black')),
-                              yaxis=dict(tickfont=dict(size=16, color='black')),
+                              xaxis=dict(tickfont=dict(size=16, color='black')), yaxis=dict(tickfont=dict(size=16, color='black')),
                               hoverlabel=dict(bgcolor="black",font_size=16,font_color="white"))
             st.plotly_chart(fig, use_container_width=True)
         else:
@@ -147,27 +138,31 @@ def create_interactive_section(df, section_title):
                 with viz_cols[i]:
                     metric_name = plot_df['Métrica'].iloc[0]
                     st.markdown(f"**{metric_name}**")
+                    hover_template = get_hover_format(metric_name)
+                    
                     if chart_type == 'Línea':
                         fig = px.line(plot_df, x='Mes', y='Valor_Num', markers=True)
                         fig.update_traces(line=dict(width=4, color='gold'), marker=dict(size=8, color='darkorange'),
-                                          hovertemplate="<b>Mes:</b> %{x}<br><b>Valor:</b> %{y:.2f}<extra></extra>",
+                                          hovertemplate=hover_template,
                                           hoverlabel=dict(bgcolor="black", font_size=16, font_color="white"))
                     else:
                         fig = px.bar(plot_df, x='Mes', y='Valor_Num')
-                        fig.update_traces(marker_color='gold',
-                                          hovertemplate="<b>Mes:</b> %{x}<br><b>Valor:</b> %{y:.2f}<extra></extra>",
+                        fig.update_traces(marker_color='gold', hovertemplate=hover_template,
                                           hoverlabel=dict(bgcolor="black", font_size=16, font_color="white"))
                     fig.update_layout(height=300, xaxis_title=None, yaxis_title=None, plot_bgcolor='rgba(0,0,0,0)',
                                       xaxis=dict(tickfont=dict(size=16, color='black')),
                                       yaxis=dict(tickfont=dict(size=16, color='black')))
                     st.plotly_chart(fig, use_container_width=True)
 
+    return filtered_df
+
 # CUERPO PRINCIPAL DEL DASHBOARD
 try:
+    # Asegúrate de que el nombre del archivo de imagen sea correcto
     image = Image.open('assets/images1.jpeg')
     st.image(image, width=400) 
 except FileNotFoundError:
-    st.warning("Advertencia: No se encontró el logo en 'assets/images.jpeg'.")
+    st.warning("Advertencia: No se encontró el logo en 'assets/images1.jpeg'.")
 
 st.title("📊 Indicadores Internos")
 st.markdown("Este dashboard se conecta directamente a tu Google Sheet. Los datos se actualizan cada 10 minutos.")
@@ -175,15 +170,40 @@ st.markdown("Este dashboard se conecta directamente a tu Google Sheet. Los datos
 tab_names = ["📊 Alcance", "🧩 Uso y Participación", "💬 Retroalimentación", "🏛️ Valor Público"]
 tab1, tab2, tab3, tab4 = st.tabs(tab_names)
 
+# Almacenamos los dataframes filtrados de cada pestaña
+filtered_dataframes = {}
+
 with tab1:
     df_alcance = load_data_from_gsheet("Alcance")
-    create_interactive_section(df_alcance, "Alcance")
+    filtered_dataframes["Alcance"] = create_interactive_section(df_alcance, "Alcance")
 with tab2:
     df_uso = load_data_from_gsheet("Uso y Participación")
-    create_interactive_section(df_uso, "Uso y Participación")
+    filtered_dataframes["Uso y Participación"] = create_interactive_section(df_uso, "Uso y Participación")
 with tab3:
     df_retro = load_data_from_gsheet("Retroalimentación")
-    create_interactive_section(df_retro, "Retroalimentación")
+    filtered_dataframes["Retroalimentación"] = create_interactive_section(df_retro, "Retroalimentación")
 with tab4:
     df_valor = load_data_from_gsheet("Valor Público")
-    create_interactive_section(df_valor, "Valor Público / Ahorro")
+    filtered_dataframes["Valor Público"] = create_interactive_section(df_valor, "Valor Público / Ahorro")
+
+# BOTÓN DE DESCARGA GENERAL
+st.sidebar.header("Opciones de Descarga")
+
+@st.cache_data
+def to_excel(dfs):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        for sheet_name, df in dfs.items():
+            if df is not None and not df.empty:
+                df.to_excel(writer, index=False, sheet_name=sheet_name)
+    processed_data = output.getvalue()
+    return processed_data
+
+excel_file = to_excel(filtered_dataframes)
+
+st.sidebar.download_button(
+    label="📥 Descargar Todos los Datos Filtrados (Excel)",
+    data=excel_file,
+    file_name="dashboard_datos_filtrados.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
