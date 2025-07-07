@@ -12,7 +12,8 @@ st.set_page_config(page_title="Dashboard de Métricas Clave", page_icon="🚀", 
 @st.cache_data(ttl=600)
 def load_data_from_gsheet(sheet_name):
     try:
-        gc = gspread.service_account_from_dict(st.secrets["google_credentials"])
+        #gc = gspread.service_account_from_dict(st.secrets["google_credentials"])
+        gc = gspread.service_account(filename='nueva-clave.json')
         spreadsheet_name = "copia-Indicadores internos +Simple 2025"
         spreadsheet = gc.open(spreadsheet_name)
         worksheet = spreadsheet.worksheet(sheet_name)
