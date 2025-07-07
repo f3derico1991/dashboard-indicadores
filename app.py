@@ -12,8 +12,7 @@ st.set_page_config(page_title="Dashboard de Métricas Clave", page_icon="🚀", 
 @st.cache_data(ttl=600)
 def load_data_from_gsheet(sheet_name):
     try:
-        #gc = gspread.service_account_from_dict(st.secrets["google_credentials"])
-        gc = gspread.service_account(filename='nueva-clave.json')
+        gc = gspread.service_account_from_dict(st.secrets["google_credentials"])
         spreadsheet_name = "copia-Indicadores internos +Simple 2025"
         spreadsheet = gc.open(spreadsheet_name)
         worksheet = spreadsheet.worksheet(sheet_name)
@@ -70,20 +69,14 @@ def generate_single_figure(plot_df, chart_type):
 # FUNCIÓN REUTILIZABLE PARA CREAR LA SECCIÓN INTERACTIVA
 def create_interactive_section(df, section_title):
     st.header(section_title)
-    if df is None or df.empty:
-        st.info("No hay datos disponibles para esta sección.")
-        return
-    if 'Métrica' not in df.columns:
-        st.warning("La primera columna debe llamarse 'Métrica'.")
-        return
+    if df is None or df.empty: return
+    if 'Métrica' not in df.columns: return
 
     # Filtro de Meses
     all_months = [col for col in df.columns if col != 'Métrica']
     with st.expander("📅 Filtrar por Rango de Meses", expanded=False):
         selected_months = st.multiselect("Selecciona los meses:", options=all_months, default=all_months, key=f"ms_{section_title}")
-    if not selected_months:
-        st.warning("Debes seleccionar al menos un mes.")
-        return
+    if not selected_months: st.warning("Debes seleccionar al menos un mes."); return
     filtered_df = df[['Métrica'] + selected_months]
 
     # Configuración de AgGrid
@@ -99,17 +92,14 @@ def create_interactive_section(df, section_title):
     selected = pd.DataFrame(grid_response['selected_rows'])
     
     if not selected.empty:
-        if st.button("🔄 Limpiar Selección", key=f"clear_{section_title}"):
-            st.rerun()
+        if st.button("🔄 Limpiar Selección", key=f"clear_{section_title}"): st.rerun()
         st.markdown("---")
         
         selected_to_show = selected.head(2)
         all_plot_data = [prepare_metric_data(pd.DataFrame([row])) for _, row in selected_to_show.iterrows()]
         all_plot_data = [df for df in all_plot_data if not df.empty]
 
-        if not all_plot_data:
-            st.warning("Las métricas seleccionadas no tienen datos válidos para mostrar.")
-            return
+        if not all_plot_data: st.warning("Las métricas seleccionadas no tienen datos válidos para mostrar."); return
         
         st.subheader("📈 Estadísticas Clave")
         kpi_cols = st.columns(len(all_plot_data))
@@ -129,19 +119,31 @@ def create_interactive_section(df, section_title):
         st.markdown("---")
         st.subheader("📊 Visualización")
 
+        # --- LÓGICA DE VISUALIZACIÓN CON FLEXIBILIDAD TOTAL ---
         display_mode = "Separadas"
+        # Mostramos los selectores de modo y tipo
         if len(all_plot_data) == 2:
             display_mode = st.radio("Modo de visualización:", ("Separadas", "Juntas"), horizontal=True, key=f"disp_{section_title}")
         
-        if display_mode == "Juntas":
+        chart_type = st.radio("Elige el tipo de gráfico:", ('Línea', 'Barras'), horizontal=True, key=f"radio_type_{section_title}")
+
+        # --- MODO JUNTAS (COMPARACIÓN) ---
+        if display_mode == "Juntas" and len(all_plot_data) == 2:
+            st.markdown(f"**Comparando: {all_plot_data[0]['Métrica'].iloc[0]} vs. {all_plot_data[1]['Métrica'].iloc[0]}**")
             combined_df = pd.concat(all_plot_data)
             color_map = {combined_df['Métrica'].unique()[0]: 'gold', combined_df['Métrica'].unique()[1]: '#1f2c38'}
-            
-            fig = px.bar(combined_df, x='Mes', y='Valor_Num', color='Métrica', barmode='group',
-                         text_auto=True, color_discrete_map=color_map)
-            
-            fig.update_traces(texttemplate='%{y:,.0f}'.replace(",", "."), textposition='outside', textfont_size=14)
-            
+
+            fig = None
+            if chart_type == 'Barras':
+                fig = px.bar(combined_df, x='Mes', y='Valor_Num', color='Métrica', barmode='group',
+                             text_auto=True, color_discrete_map=color_map)
+                fig.update_traces(texttemplate='%{y:,.0f}'.replace(",", "."), textposition='outside', textfont_size=14)
+            else: # Línea
+                fig = px.line(combined_df, x='Mes', y='Valor_Num', color='Métrica', markers=True,
+                              color_discrete_map=color_map)
+                fig.update_traces(hovertemplate="<b>%{data.name}</b><br><b>Mes:</b> %{x}<br><b>Valor:</b> %{y:,.2f}<extra></extra>".replace(",","."),
+                                  hoverlabel=dict(bgcolor="black",font_size=16,font_color="white"))
+
             max_y = combined_df['Valor_Num'].max()
             fig.update_layout(
                 height=450,
@@ -151,18 +153,15 @@ def create_interactive_section(df, section_title):
                 legend_title_text='',
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
                 yaxis=dict(
-                    range=[0, max_y * 1.15],
-                    dtick=2500,
-                    tickfont=dict(size=14),
-                    showgrid=True,
-                    gridcolor='LightGray'
+                    range=[0, max_y * 1.15], dtick=2500, tickfont=dict(size=14),
+                    showgrid=True, gridcolor='LightGray'
                 ),
                 xaxis=dict(tickfont=dict(size=14))
             )
             st.plotly_chart(fig, use_container_width=True)
 
-        else: # Modo Separadas o una sola métrica
-            chart_type = st.radio("Elige el tipo de gráfico:", ('Línea', 'Barras'), horizontal=True, key=f"radio_{section_title}")
+        # --- MODO SEPARADAS (O UNA SOLA MÉTRICA) ---
+        else:
             viz_cols = st.columns(len(all_plot_data))
             for i, plot_df in enumerate(all_plot_data):
                 with viz_cols[i]:
@@ -190,4 +189,4 @@ with tab2:
 with tab3:
     create_interactive_section(load_data_from_gsheet("Retroalimentación"), "Retroalimentación")
 with tab4:
-    create_interactive_section(load_data_from_gsheet("Valor Público"), "Valor Público / Ahorro")
+    create_interactive_section(load_data_from_gsheet("Valor Público"), "Valor Público - Ahorro")
