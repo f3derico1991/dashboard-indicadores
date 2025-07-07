@@ -141,7 +141,7 @@ def create_interactive_section(df, section_title):
                         tickfont=dict(size=16, color='black'),
                         # dtick le dice a Plotly cada cuánto poner una marca en el eje.
                         # Aquí lo ponemos cada 1000. Puedes cambiar este valor.
-                        dtick=1000 
+                        dtick=10000 
                     )
                 )
                 st.plotly_chart(fig, use_container_width=True)
