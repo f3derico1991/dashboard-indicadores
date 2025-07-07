@@ -5,11 +5,11 @@ import plotly.express as px
 from PIL import Image
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 from io import BytesIO
-from fpdf import FPDF # ---> NUEVO: Importar la librería para PDF
 
-# --- CONFIGURACIÓN DE LA PÁGINA Y CONEXIÓN (sin cambios) ---
+# CONFIGURACIÓN DE LA PÁGINA
 st.set_page_config(page_title="Dashboard de Métricas Clave", page_icon="🚀", layout="wide")
 
+# CONEXIÓN A GOOGLE SHEETS
 @st.cache_data(ttl=600)
 def load_data_from_gsheet(sheet_name):
     try:
@@ -18,19 +18,21 @@ def load_data_from_gsheet(sheet_name):
         spreadsheet = gc.open(spreadsheet_name)
         worksheet = spreadsheet.worksheet(sheet_name)
         data = worksheet.get_all_records()
+
         if not data:
             st.warning(f"La pestaña '{sheet_name}' está vacía.")
             return pd.DataFrame()
+            
         df = pd.DataFrame(data)
         if 'Métrica' in df.columns:
             df = df[['Métrica'] + [col for col in df.columns if col != 'Métrica']]
         return df
     except Exception as e:
-        st.error(f"Error al cargar la pestaña '{sheet_name}': {e}.")
+        st.error(f"Error al cargar la pestaña '{sheet_name}': {e}. "
+                 "Si estás en la web, asegúrate de que los 'Secrets' de Streamlit estén bien configurados y que has compartido el Google Sheet con el 'client_email'.")
         return None
 
-# --- FUNCIONES AUXILIARES MEJORADAS ---
-
+# FUNCIÓN AUXILIAR PARA PREPARAR DATOS
 def prepare_metric_data(metric_df):
     plot_df = metric_df.melt(id_vars=['Métrica'], var_name='Mes', value_name='Valor')
     plot_df['Valor_Num'] = plot_df['Valor'].astype(str).str.replace('%', '', regex=False).str.strip()
@@ -38,66 +40,29 @@ def prepare_metric_data(metric_df):
     plot_df.dropna(subset=['Valor_Num'], inplace=True)
     return plot_df
 
-# ---> NUEVO: Formateo inteligente para KPIs
-def format_kpi(metric_name, value):
-    if '%' in metric_name.lower() or 'tasa' in metric_name.lower():
-        return f"{value:.2f}%"
-    else:
-        return f"{value:,.0f}"
-
-# ---> NUEVO: Función para generar el PDF
-def create_pdf(selected_data, kpi_data, figures):
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Arial", "B", 16)
-    
-    # Título del PDF
-    pdf.cell(0, 10, "Reporte de Métricas Clave", 0, 1, "C")
-    pdf.ln(10)
-
-    for i, data in enumerate(selected_data):
-        metric_name = data['metric_name']
-        
-        pdf.set_font("Arial", "B", 14)
-        pdf.cell(0, 10, f"Métrica: {metric_name}", 0, 1)
-
-        # KPIs
-        pdf.set_font("Arial", "", 12)
-        kpis = kpi_data[i]
-        for key, value in kpis.items():
-            pdf.cell(40, 10, f"{key}: {value}", 0, 0)
-        pdf.ln(10)
-
-        # Gráfico
-        fig = figures[i]
-        if fig:
-            # Guardar el gráfico como una imagen temporal en memoria
-            img_bytes = fig.to_image(format="png")
-            img_file = BytesIO(img_bytes)
-            
-            # Añadir la imagen al PDF
-            pdf.image(img_file, x=10, w=190) # w=190 para que ocupe casi todo el ancho
-            pdf.ln(10)
-    
-    return pdf.output(dest='S').encode('latin-1')
-
-# --- FUNCIÓN PRINCIPAL DE LA SECCIÓN INTERACTIVA (Reestructurada) ---
-
+# FUNCIÓN REUTILIZABLE PARA CREAR LA SECCIÓN INTERACTIVA
 def create_interactive_section(df, section_title):
     st.header(section_title)
     if df is None or df.empty:
-        st.info("No hay datos disponibles para esta sección.")
-        return pd.DataFrame(), None, [], [] # Devolvemos valores vacíos
+        st.info("No hay datos disponibles para esta sección o hubo un error al cargarlos.")
+        return pd.DataFrame()
+    if 'Métrica' not in df.columns:
+        st.warning("La primera columna de tu hoja de cálculo debe llamarse exactamente 'Métrica'.")
+        return pd.DataFrame()
 
     # Filtro de Meses
     all_months = [col for col in df.columns if col != 'Métrica']
     with st.expander("📅 Filtrar por Rango de Meses", expanded=False):
-        selected_months = st.multiselect("Selecciona meses:", options=all_months, default=all_months, key=f"ms_{section_title}")
-    
+        selected_months = st.multiselect(
+            "Selecciona los meses que quieres analizar:",
+            options=all_months,
+            default=all_months,
+            key=f"multiselect_{section_title}"
+        )
     if not selected_months:
         st.warning("Debes seleccionar al menos un mes.")
-        return pd.DataFrame(), None, [], []
-    
+        return pd.DataFrame()
+        
     filtered_df = df[['Métrica'] + selected_months]
 
     # Configuración de AgGrid
@@ -106,52 +71,70 @@ def create_interactive_section(df, section_title):
     gb.configure_grid_options(domLayout='autoHeight')
     gridOptions = gb.build()
 
-    st.info("Selecciona hasta 2 filas para comparar.")
+    st.info("Selecciona hasta 2 filas en la tabla para comparar sus gráficos.")
     grid_response = AgGrid(filtered_df, gridOptions=gridOptions, update_mode=GridUpdateMode.MODEL_CHANGED,
-                           data_return_mode=DataReturnMode.AS_INPUT, theme='streamlit', key=f"grid_{section_title}")
+                           data_return_mode=DataReturnMode.AS_INPUT, allow_unsafe_jscode=True, theme='streamlit', key=f"grid_{section_title}")
 
-    selected_rows = pd.DataFrame(grid_response['selected_rows'])
+    selected = pd.DataFrame(grid_response['selected_rows'])
     
-    # Inicializamos las variables que devolveremos
-    figures_to_download = []
-    kpi_data_to_download = []
-
-    if not selected_rows.empty:
+    if not selected.empty:
         if st.button("🔄 Limpiar Selección", key=f"clear_{section_title}"):
             st.rerun()
+
         st.markdown("---")
 
-        all_plot_data = [prepare_metric_data(pd.DataFrame([row])) for _, row in selected_rows.iterrows()]
-        
-        # Mostrar KPIs con formato correcto
+        all_plot_data = []
+        for index, row in selected.iterrows():
+            metric_df = pd.DataFrame([row])
+            plot_df = prepare_metric_data(metric_df)
+            if not plot_df.empty:
+                all_plot_data.append(plot_df)
+
         st.subheader("📈 Estadísticas Clave")
         kpi_cols = st.columns(len(all_plot_data))
         for i, plot_df in enumerate(all_plot_data):
-            if not plot_df.empty:
-                with kpi_cols[i]:
-                    metric_name = plot_df['Métrica'].iloc[0]
-                    st.markdown(f"**{metric_name}**")
-                    kpis = {
-                        "Promedio": plot_df['Valor_Num'].mean(),
-                        "Máximo": plot_df['Valor_Num'].max(),
-                        "Mínimo": plot_df['Valor_Num'].min(),
-                        "Último Mes": plot_df['Valor_Num'].iloc[-1]
-                    }
-                    kpi_data_to_download.append({k: format_kpi(metric_name, v) for k, v in kpis.items()})
-                    for key, value in kpis.items():
-                        st.metric(label=key, value=format_kpi(metric_name, value))
-
+            with kpi_cols[i]:
+                metric_name = plot_df['Métrica'].iloc[0]
+                st.markdown(f"**{metric_name}**")
+                avg_val = plot_df['Valor_Num'].mean()
+                max_val = plot_df['Valor_Num'].max()
+                min_val = plot_df['Valor_Num'].min()
+                last_val = plot_df['Valor_Num'].iloc[-1]
+                st.metric(label="Promedio", value=f"{avg_val:,.2f}")
+                st.metric(label="Máximo", value=f"{max_val:,.2f}")
+                st.metric(label="Mínimo", value=f"{min_val:,.2f}")
+                st.metric(label="Último Mes", value=f"{last_val:,.2f}")
+        
         st.markdown("---")
         st.subheader("📊 Visualización")
-        
-        chart_type = st.radio("Tipo de gráfico:", ('Línea', 'Barras'), horizontal=True, key=f"radio_{section_title}")
-        
-        def get_hover_format(metric_name):
-            return "<b>Mes:</b> %{x}<br><b>Valor:</b> %{y:.2f}%<extra></extra>" if '%' in metric_name.lower() or 'tasa' in metric_name.lower() else "<b>Mes:</b> %{x}<br><b>Valor:</b> %{y}<extra></extra>"
 
-        viz_cols = st.columns(len(all_plot_data))
-        for i, plot_df in enumerate(all_plot_data):
-            if not plot_df.empty:
+        chart_options = ('Lado a Lado', 'Combinado') if len(selected) > 1 else ('Línea', 'Barras')
+        display_mode = 'Línea'
+        if len(selected) > 1:
+            display_mode = st.radio("Elige cómo mostrar los gráficos:", chart_options, horizontal=True, key=f"display_{section_title}")
+        
+        chart_type = st.radio("Elige el tipo de gráfico:", ('Línea', 'Barras'), horizontal=True, key=f"radio_{section_title}")
+
+        # Función para determinar el formato del hover (CORREGIDA)
+        def get_hover_format(metric_name):
+            if '%' in metric_name.lower() or 'tasa' in metric_name.lower():
+                return "<b>Mes:</b> %{x}<br><b>Valor:</b> %{y:.2f}%<extra></extra>"
+            else:
+                # Muestra el valor tal cual, sin forzar formato de flotante o miles.
+                return "<b>Mes:</b> %{x}<br><b>Valor:</b> %{y}<extra></extra>"
+
+        if len(selected) > 1 and display_mode == 'Combinado':
+            combined_df = pd.concat(all_plot_data)
+            fig = px.line(combined_df, x='Mes', y='Valor_Num', color='Métrica', markers=True)
+            # El hovertemplate para gráficos combinados es más genérico
+            fig.update_traces(hovertemplate="<b>%{data.name}</b><br><b>Mes:</b> %{x}<br><b>Valor:</b> %{y:,.2f}<extra></extra>")
+            fig.update_layout(height=400, xaxis_title=None, yaxis_title=None, plot_bgcolor='rgba(0,0,0,0)',
+                              xaxis=dict(tickfont=dict(size=16, color='black')), yaxis=dict(tickfont=dict(size=16, color='black')),
+                              hoverlabel=dict(bgcolor="black",font_size=16,font_color="white"))
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            viz_cols = st.columns(len(all_plot_data))
+            for i, plot_df in enumerate(all_plot_data):
                 with viz_cols[i]:
                     metric_name = plot_df['Métrica'].iloc[0]
                     st.markdown(f"**{metric_name}**")
@@ -159,58 +142,68 @@ def create_interactive_section(df, section_title):
                     
                     if chart_type == 'Línea':
                         fig = px.line(plot_df, x='Mes', y='Valor_Num', markers=True)
-                        fig.update_traces(line=dict(width=4, color='gold'), marker=dict(size=8, color='darkorange'), hovertemplate=hover_template, hoverlabel=dict(bgcolor="black", font_size=16, font_color="white"))
+                        fig.update_traces(line=dict(width=4, color='gold'), marker=dict(size=8, color='darkorange'),
+                                          hovertemplate=hover_template,
+                                          hoverlabel=dict(bgcolor="black", font_size=16, font_color="white"))
                     else:
                         fig = px.bar(plot_df, x='Mes', y='Valor_Num')
-                        fig.update_traces(marker_color='gold', hovertemplate=hover_template, hoverlabel=dict(bgcolor="black", font_size=16, font_color="white"))
-                    
-                    fig.update_layout(height=300, xaxis_title=None, yaxis_title=None, plot_bgcolor='rgba(0,0,0,0)', xaxis=dict(tickfont=dict(size=16, color='black')), yaxis=dict(tickfont=dict(size=16, color='black')))
+                        fig.update_traces(marker_color='gold', hovertemplate=hover_template,
+                                          hoverlabel=dict(bgcolor="black", font_size=16, font_color="white"))
+                    fig.update_layout(height=300, xaxis_title=None, yaxis_title=None, plot_bgcolor='rgba(0,0,0,0)',
+                                      xaxis=dict(tickfont=dict(size=16, color='black')),
+                                      yaxis=dict(tickfont=dict(size=16, color='black')))
                     st.plotly_chart(fig, use_container_width=True)
-                    figures_to_download.append(fig)
 
-    selected_data_for_download = [{"metric_name": row['Métrica']} for _, row in selected_rows.iterrows()]
-    return filtered_df, selected_data_for_download, kpi_data_to_download, figures_to_download
+    return filtered_df
 
-# --- CUERPO PRINCIPAL DEL DASHBOARD ---
-
-# Logo y Título
+# CUERPO PRINCIPAL DEL DASHBOARD
 try:
+    # Asegúrate de que el nombre del archivo de imagen sea correcto
     image = Image.open('assets/images1.jpeg')
     st.image(image, width=400) 
 except FileNotFoundError:
-    st.warning("Advertencia: No se encontró el logo.")
+    st.warning("Advertencia: No se encontró el logo en 'assets/images1.jpeg'.")
+
 st.title("📊 Indicadores Internos")
-st.markdown("Dashboard interactivo conectado a Google Sheets. Actualización cada 10 minutos.")
+st.markdown("Este dashboard se conecta directamente a tu Google Sheet. Los datos se actualizan cada 10 minutos.")
 
-# Pestañas
 tab_names = ["📊 Alcance", "🧩 Uso y Participación", "💬 Retroalimentación", "🏛️ Valor Público"]
-tabs = st.tabs(tab_names)
+tab1, tab2, tab3, tab4 = st.tabs(tab_names)
 
-# ---> NUEVO: Almacenar resultados de todas las pestañas
-all_filtered_dfs = {}
-all_selected_data = []
-all_kpis = []
-all_figures = []
+# Almacenamos los dataframes filtrados de cada pestaña
+filtered_dataframes = {}
 
-for tab, name in zip(tabs, tab_names):
-    with tab:
-        df = load_data_from_gsheet(name.split(" ")[1]) # Extrae el nombre de la hoja del título
-        filtered_df, selected_data, kpis, figures = create_interactive_section(df, name)
-        all_filtered_dfs[name] = filtered_df
-        if selected_data:
-            all_selected_data.extend(selected_data)
-            all_kpis.extend(kpis)
-            all_figures.extend(figures)
+with tab1:
+    df_alcance = load_data_from_gsheet("Alcance")
+    filtered_dataframes["Alcance"] = create_interactive_section(df_alcance, "Alcance")
+with tab2:
+    df_uso = load_data_from_gsheet("Uso y Participación")
+    filtered_dataframes["Uso y Participación"] = create_interactive_section(df_uso, "Uso y Participación")
+with tab3:
+    df_retro = load_data_from_gsheet("Retroalimentación")
+    filtered_dataframes["Retroalimentación"] = create_interactive_section(df_retro, "Retroalimentación")
+with tab4:
+    df_valor = load_data_from_gsheet("Valor Público")
+    filtered_dataframes["Valor Público"] = create_interactive_section(df_valor, "Valor Público / Ahorro")
 
-# --- BOTÓN DE DESCARGA EN LA BARRA LATERAL ---
+# BOTÓN DE DESCARGA GENERAL
 st.sidebar.header("Opciones de Descarga")
-if all_selected_data:
-    pdf_bytes = create_pdf(all_selected_data, all_kpis, all_figures)
-    st.sidebar.download_button(
-        label="📥 Descargar Reporte en PDF",
-        data=pdf_bytes,
-        file_name="reporte_dashboard.pdf",
-        mime="application/pdf"
-    )
-else:
-    st.sidebar.info("Selecciona al menos una métrica para generar el reporte en PDF.")
+
+@st.cache_data
+def to_excel(dfs):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        for sheet_name, df in dfs.items():
+            if df is not None and not df.empty:
+                df.to_excel(writer, index=False, sheet_name=sheet_name)
+    processed_data = output.getvalue()
+    return processed_data
+
+excel_file = to_excel(filtered_dataframes)
+
+st.sidebar.download_button(
+    label="📥 Descargar Todos los Datos Filtrados (Excel)",
+    data=excel_file,
+    file_name="dashboard_datos_filtrados.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
