@@ -112,14 +112,23 @@ def create_interactive_section(df, section_title):
         if stats_data_transposed:
             stats_df = pd.DataFrame(stats_data_transposed)
             stats_df.index.name = "Estadística"
-            styled_df = stats_df.style.format(format_number_es)\
-                                      .background_gradient(cmap='YlGnBu', axis=1)\
-                                      .set_properties(**{'text-align': 'right', 'padding-right': '10px'})\
-                                      .set_table_styles([{'selector': 'th', 'props': [('text-align', 'center'), ('font-weight', 'bold')]},
-                                                         {'selector': 'th.row_heading', 'props': [('text-align', 'left'), ('font-weight', 'bold')]},
-                                                         {'selector': 'td, th', 'props': [('border', '1px solid #ddd')]}])\
-                                      .set_table_attributes('style="width:100%; border-collapse: collapse;"')
-            st.markdown(styled_df.to_html(), unsafe_allow_html=True)
+            
+            styler = stats_df.style.format(format_number_es)
+
+            # Asignar un mapa de color a cada métrica para que coincida con los gráficos
+            color_map_list = ['YlOrRd', 'Blues', 'Reds']
+            for i, metric_name in enumerate(stats_df.columns):
+                cmap = color_map_list[i % len(color_map_list)]
+                styler = styler.background_gradient(cmap=cmap, subset=[metric_name], axis=0)
+
+            # Aplicar el resto de los estilos
+            styler = styler.set_properties(**{'text-align': 'right', 'padding-right': '10px'})\
+                           .set_table_styles([{'selector': 'th', 'props': [('text-align', 'center'), ('font-weight', 'bold')]},
+                                              {'selector': 'th.row_heading', 'props': [('text-align', 'left'), ('font-weight', 'bold')]},
+                                              {'selector': 'td, th', 'props': [('border', '1px solid #ddd')]}])\
+                           .set_table_attributes('style="width:100%; border-collapse: collapse;"')
+            
+            st.markdown(styler.to_html(), unsafe_allow_html=True)
         
         st.markdown("---")
         st.subheader("📊 Visualización")
