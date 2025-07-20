@@ -156,9 +156,17 @@ def create_interactive_section(df, section_title):
             st.plotly_chart(fig, use_container_width=True)
         
         else: # Modo Separadas o una sola métrica
-            viz_cols = st.columns(len(all_plot_data))
+            num_plots = len(all_plot_data)
+            
+            if num_plots == 1:
+                # Para un solo gráfico, lo centramos para que no ocupe todo el ancho.
+                _, viz_col, _ = st.columns([0.5, 3, 0.5])
+                plot_containers = [viz_col]
+            else: # 2 o 3 gráficos
+                plot_containers = st.columns(num_plots)
+
             for i, plot_df in enumerate(all_plot_data):
-                with viz_cols[i]:
+                with plot_containers[i]:
                     metric_name = plot_df['Métrica'].iloc[0]
                     st.markdown(f"**{metric_name}**")
                     fig = generate_single_figure(plot_df, chart_type, i)
